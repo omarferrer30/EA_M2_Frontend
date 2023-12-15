@@ -1,4 +1,6 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
 import 'package:proyecto_flutter/api/models/product_model.dart';
 import 'package:proyecto_flutter/api/services/product_service.dart';
@@ -6,6 +8,7 @@ import 'package:proyecto_flutter/api/services/token_service.dart';
 import 'package:proyecto_flutter/screens/product_detail.dart';
 import 'package:proyecto_flutter/utils/constants.dart';
 import 'package:proyecto_flutter/widget/nav_bar.dart';
+import 'package:latlong2/latlong.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -14,10 +17,14 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   late List<Product> productList = [];
+  late List<Product> productListbyDistance = [];
   late List<Product> filteredList = [];
+  late List<Product> filteredByDistanceList = [];
   late ScrollController _scrollController;
   bool _loading = false;
   TextEditingController _searchController = TextEditingController();
+  TextEditingController _searchDistanceController = TextEditingController();
+  LatLng _currentLocation = LatLng(41.2731, 1.9865);
 
   @override
   void initState() {
@@ -25,6 +32,7 @@ class _HomePageState extends State<HomePage> {
     checkAuthAndNavigate();
     _scrollController = ScrollController()..addListener(_scrollListener);
     fetchProducts();
+    _getCurrentUserLocation();
   }
 
   Future<void> checkAuthAndNavigate() async {
@@ -37,7 +45,9 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       productList = products;
       filteredList =
-          products; // Inicializa la lista filtrada con todos los productos
+          products; 
+      filteredByDistanceList =
+        products;// Inicializa la lista filtrada con todos los productos
     });
   }
 
@@ -54,13 +64,13 @@ class _HomePageState extends State<HomePage> {
         _loading = true;
       });
 
-      int nextPage = (filteredList.length / 50).ceil() + 1;
+      int nextPage = (filteredByDistanceList.length / 50).ceil() + 1;
       List<Product> nextPageProducts =
           await ProductService.getProducts(nextPage);
 
       setState(() {
         productList.addAll(nextPageProducts);
-        filteredList = productList
+        filteredByDistanceList = productList
             .where((product) =>
                 product.name
                     ?.toLowerCase()
@@ -81,6 +91,70 @@ class _HomePageState extends State<HomePage> {
           .toList();
     });
   }
+  double calculateDistance(double lat1, double lon1, double? lat2, double? lon2) {
+      const R = 6371.0; // Radio de la Tierra en kilómetros
+      final dLat = _toRadians(lat2! - lat1);
+      final dLon = _toRadians(lon2! - lon1);
+
+      final a = sin(dLat / 2) * sin(dLat / 2) +
+          cos(_toRadians(lat1)) * cos(_toRadians(lat2!)) * sin(dLon / 2) * sin(dLon / 2);
+
+      final c = 2 * asin(sqrt(a));
+
+      return R * c;
+  }
+
+  double _toRadians(double degree) {
+  return degree * (pi / 180);
+}
+   double _calculateDistance(Product product) {
+      final productLatitude = product.location?.latitude ?? 0.0;
+      final productLongitude = product.location?.longitude ?? 0.0;
+      
+      return calculateDistance(
+        _currentLocation.latitude,
+        _currentLocation.longitude,
+        productLatitude,
+        productLongitude,
+      );
+  }
+
+  void _filterProductsbyDistance(double maxDistance){
+    setState(() {
+      filteredByDistanceList = productList
+      .where((product) =>
+              _calculateDistance(product) <= maxDistance)
+          .toList();
+    });
+  }
+
+  void _handleSearch(String value) {
+  // Intenta convertir el String a Double
+  final double? distance = double.tryParse(value);
+
+  // Llama a _filterProductsbyDistance con el valor convertido
+  if (distance != null) {
+    _filterProductsbyDistance(distance);
+  }
+}
+
+  Future<void> _getCurrentUserLocation() async {
+    LatLng location = await _getUserLocation();
+    setState(() {
+      _currentLocation = location;
+    });
+  }
+    Future<LatLng> _getUserLocation() async {
+    LocationPermission permission = await Geolocator.requestPermission();
+
+    if (permission == LocationPermission.denied) {
+      return LatLng(0.0, 0.0);
+    }
+
+    Position position = await Geolocator.getCurrentPosition();
+    return LatLng(position.latitude, position.longitude);
+  }
+
 
   @override
   void dispose() {
@@ -99,9 +173,9 @@ class _HomePageState extends State<HomePage> {
             delegate: SliverChildListDelegate([
               SizedBox(height: 30),
               Container(
-                child: SearchBar(
-                  onSearch: _filterProducts,
-                  searchController: _searchController,
+                child: SearchBar2(
+                  onSearch: _handleSearch,
+                  searchDistanceController: _searchDistanceController,
                 ),
               ),
             ]),
@@ -118,6 +192,7 @@ class _HomePageState extends State<HomePage> {
               Container(
                   child: ProductsHorizontal(
                 productList: productList,
+                userLocation: _currentLocation,
               )),
               SizedBox(height: 10),
             ]),
@@ -138,13 +213,16 @@ class _HomePageState extends State<HomePage> {
             ),
             delegate: SliverChildBuilderDelegate(
               (context, index) {
-                if (index < filteredList.length) {
-                  return ProductsVerticalItem(product: filteredList[index]);
+                if (index < filteredByDistanceList.length) {
+                  return ProductsVerticalItem(
+                product: filteredByDistanceList[index],
+                userLocation: _currentLocation,
+              );
                 } else {
                   return _loading ? CircularProgressIndicator() : Container();
                 }
               },
-              childCount: filteredList.length + 1,
+              childCount: filteredByDistanceList.length + 1,
             ),
           )
         ],
@@ -152,6 +230,57 @@ class _HomePageState extends State<HomePage> {
     );
   }
 }
+class SearchBar2 extends StatelessWidget {
+  final Function(String) onSearch;
+  final TextEditingController searchDistanceController;
+
+  const SearchBar2(
+      {Key? key, required this.onSearch, required this.searchDistanceController})
+      : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Padding(
+        padding: const EdgeInsets.only(),
+        child: TextField(
+          controller: searchDistanceController,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          decoration: InputDecoration(
+            contentPadding:
+                const EdgeInsets.symmetric(vertical: 0, horizontal: 20),
+            filled: true,
+            fillColor: Theme.of(context).colorScheme.onPrimary,
+            prefixIcon: IconButton(
+              onPressed: () {},
+              icon: Icon(
+                Icons.search,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            hintStyle: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            hintText: "Introduce una distancia en Km, te mostraremos productos en ese radio de proximidad.",
+            border: OutlineInputBorder(
+              borderSide: BorderSide.none,
+              borderRadius: BorderRadius.circular(100),
+            ),
+          ),
+          onChanged: onSearch,
+        ),
+      ),
+    );
+  }
+}
+
 
 class SearchBar extends StatelessWidget {
   final Function(String) onSearch;
@@ -206,8 +335,9 @@ class SearchBar extends StatelessWidget {
 
 class ProductsVerticalItem extends StatelessWidget {
   final Product product;
+  final LatLng userLocation;
 
-  const ProductsVerticalItem({Key? key, required this.product})
+  const ProductsVerticalItem({Key? key, required this.product, required this.userLocation})
       : super(key: key);
 
   @override
@@ -259,27 +389,80 @@ class ProductsVerticalItem extends StatelessWidget {
                 ),
               ),
             ),
-            Positioned(
+           Positioned(
               bottom: 10,
               right: 10,
-              child: Container(
-                padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.onPrimary,
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                child: Text(
-                  '${product.price} €/Kg', // Agrega el precio del producto
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.primary,
-                    fontSize: 18.0,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.onPrimary,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Text(
+                      '${product.price} €/Kg',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontSize: 18.0,
+                      ),
+                    ),
                   ),
-                ),
+                  SizedBox(height: 5), // Espacio entre el precio y la distancia
+                ],
               ),
             ),
+            Positioned(
+              bottom: 10,
+              left: 20,
+              child:Container(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.onPrimary,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Text(
+                      'Distancia: ${_calculateDistance().toStringAsFixed(2)} km',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontSize: 14.0,
+                      ),
+                    ),
+                  ),
+            )
+
           ],
         ),
       ),
+    );
+  }
+  double calculateDistance(double lat1, double lon1, double? lat2, double? lon2) {
+  const R = 6371.0; // Radio de la Tierra en kilómetros
+  final dLat = _toRadians(lat2! - lat1);
+  final dLon = _toRadians(lon2! - lon1);
+
+  final a = sin(dLat / 2) * sin(dLat / 2) +
+      cos(_toRadians(lat1)) * cos(_toRadians(lat2!)) * sin(dLon / 2) * sin(dLon / 2);
+
+  final c = 2 * asin(sqrt(a));
+
+  return R * c;
+}
+
+double _toRadians(double degree) {
+  return degree * (pi / 180);
+}
+
+   double _calculateDistance() {
+    final productlatitude = product.location?.latitude;
+    final productlongitude = product.location?.longitude;
+    return calculateDistance(
+      userLocation.latitude,
+      userLocation.longitude,
+      productlatitude,
+      productlongitude
+     
     );
   }
 }
@@ -310,10 +493,12 @@ class MidText extends StatelessWidget {
 
 class ProductsHorizontal extends StatelessWidget {
   final List<Product> productList;
+  final LatLng userLocation;
 
   const ProductsHorizontal({
     super.key,
     required this.productList,
+    required this.userLocation,
   });
 
   @override
@@ -330,6 +515,12 @@ class ProductsHorizontal extends StatelessWidget {
               itemCount: productList.length,
               physics: const BouncingScrollPhysics(),
               itemBuilder: (context, index) {
+                 double distance = calculateDistance(
+                  userLocation.latitude,
+                  userLocation.longitude,
+                  productList[index].location?.latitude ?? 0.0,
+                  productList[index].location?.longitude ?? 0.0,
+                );
                 return GestureDetector(
                   onTap: () {
                     Get.to(ProductDetailScreen(
@@ -395,6 +586,26 @@ class ProductsHorizontal extends StatelessWidget {
                             ),
                           ),
                         ),
+                        Positioned(
+                           bottom: 10,
+                           left: 20,
+                           child: Container(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 16.0, vertical: 8.0),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.onPrimary,
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                            child: Text(
+                              '${distance.toStringAsFixed(2)} km', // Muestra la distancia
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontSize: 14.0,  // Ajusta el tamaño según tus necesidades
+                              ),
+                            ),
+                          ),
+                        )
+                        
                       ],
                     ),
                   ),
@@ -406,6 +617,23 @@ class ProductsHorizontal extends StatelessWidget {
       ],
     );
   }
+
+    double calculateDistance(double lat1, double lon1, double? lat2, double? lon2) {
+  const R = 6371.0; // Radio de la Tierra en kilómetros
+  final dLat = _toRadians(lat2! - lat1);
+  final dLon = _toRadians(lon2! - lon1);
+
+  final a = sin(dLat / 2) * sin(dLat / 2) +
+      cos(_toRadians(lat1)) * cos(_toRadians(lat2!)) * sin(dLon / 2) * sin(dLon / 2);
+
+  final c = 2 * asin(sqrt(a));
+
+  return R * c;
+}
+
+double _toRadians(double degree) {
+  return degree * (pi / 180);
+}
 }
 
 class TopText extends StatelessWidget {
